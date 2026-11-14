@@ -50,6 +50,7 @@ func TestHostFileArgumentBoundaries(t *testing.T) {
 func TestHeadlessSchemasMatchTheirExtendedArguments(t *testing.T) {
 	arguments := map[string]any{
 		NameListSessions: ListSessionsArgs{}, NameListHosts: ListHostsArgs{}, NameTerminalExec: HostExecArgs{}, NameTerminalExecMany: TerminalExecManyArgs{},
+		NameTerminalStart: TerminalStartArgs{}, NameTerminalPoll: TerminalPollArgs{}, NameTerminalStop: TerminalStopArgs{},
 		NameSFTPList: FileListArgs{}, NameSFTPRead: FileReadArgs{}, NameSFTPWrite: SFTPWriteArgs{}, NameSFTPRemove: SFTPRemoveArgs{},
 		NameSFTPStat: SFTPListArgs{}, NameSFTPChecksum: FileChecksumArgs{}, NameSFTPUpload: TransferArgs{}, NameSFTPDownload: TransferArgs{},
 		NameTransferStatus: TransferQuery{}, NameTransferCancel: TransferQuery{},

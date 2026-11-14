@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -305,5 +306,97 @@ func TestStreamCommandSkipsOversizedLinesAndKeepsReading(t *testing.T) {
 	})
 	if err != nil || got != "before\nafter\n" {
 		t.Fatalf("got %q, error %v", got, err)
+	}
+}
+
+// streamRecorder keeps what ExecStream delivers and reports the first chunk.
+type streamRecorder struct {
+	mu     sync.Mutex
+	text   strings.Builder
+	seen   chan struct{}
+	once   sync.Once
+	needle string
+}
+
+func (r *streamRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	r.text.Write(p)
+	reached := strings.Contains(r.text.String(), r.needle)
+	r.mu.Unlock()
+	if reached {
+		r.once.Do(func() { close(r.seen) })
+	}
+	return len(p), nil
+}
+
+func (r *streamRecorder) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.text.String()
+}
+
+func TestExecStreamDeliversOutputWhileTheCommandRuns(t *testing.T) {
+	release := make(chan struct{})
+	harness := connectedCommandHarness(t, func(_ string, channel ssh.Channel) {
+		_, _ = io.WriteString(channel, "first\n")
+		<-release
+		_, _ = io.WriteString(channel, "second\n")
+		channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{3}))
+		_ = channel.Close()
+	})
+	recorder := &streamRecorder{seen: make(chan struct{}), needle: "first\n"}
+	done := make(chan ExecResult, 1)
+	errs := make(chan error, 1)
+	go func() {
+		result, err := harness.conn.ExecStream(context.Background(), "stream", recorder)
+		done <- result
+		errs <- err
+	}()
+	select {
+	case <-recorder.seen:
+	case <-time.After(time.Second):
+		t.Fatal("output did not arrive while the command was still running")
+	}
+	if got := recorder.String(); got != "first\n" {
+		t.Fatalf("output before the command ended = %q", got)
+	}
+	close(release)
+	select {
+	case result := <-done:
+		if err := <-errs; err != nil || result.ExitCode != 3 {
+			t.Fatalf("result = %+v, err = %v", result, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ExecStream did not return")
+	}
+	if got := recorder.String(); got != "first\nsecond\n" {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestExecStreamCancellationClosesOnlyItsSession(t *testing.T) {
+	started := make(chan struct{})
+	harness := connectedCommandHarness(t, func(_ string, channel ssh.Channel) {
+		close(started)
+		_, _ = io.Copy(io.Discard, channel)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := harness.conn.ExecStream(ctx, "wait", io.Discard)
+		result <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled stream did not return")
+	}
+	if harness.conn.Status().Phase != PhaseConnected {
+		t.Fatalf("connection phase = %v", harness.conn.Status().Phase)
 	}
 }

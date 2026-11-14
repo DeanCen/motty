@@ -138,13 +138,16 @@ func ServeAgentMCP(ctx context.Context, in io.Reader, out io.Writer, options Age
 	instructions := "Tools to work on the saved hosts the user opened to you in Motty. Call list_hosts or list_sessions to get a host id. " +
 		"A host connects when you first use it. Commands run without a terminal and keep no state between calls. " +
 		"note_query searches the user's local note library; note_edit changes it and is offered only with full access."
+	if mode != gate.ModeObserve {
+		instructions += " terminal_start runs a command in the background and returns a job id at once; read it with terminal_poll and end it with terminal_stop, so a long command does not hold up the conversation."
+	}
 	if mode == gate.ModeAllowAll {
-		instructions += "The user enabled full access for these hosts. Commands and file changes run without approval. Note edits also write the Markdown file a linked note points to."
+		instructions += " The user enabled full access for these hosts. Commands and file changes run without approval. Note edits also write the Markdown file a linked note points to."
 		if len(backend.transferRoots) == 0 {
 			instructions += " File transfer tools (sftp_upload, sftp_download, transfer_cancel) are off: start the server with --transfer-root <local directory> to offer them."
 		}
 	} else {
-		instructions += "Nobody can approve anything here, so a call that would need approval is refused."
+		instructions += " Nobody can approve anything here, so a call that would need approval is refused."
 	}
 	return mcp.ServeStdio(ctx, in, out, mcp.Config{
 		Tools: tools.Headless(tools.HeadlessOptions{
@@ -191,6 +194,8 @@ type agentBackend struct {
 
 	mu                sync.Mutex
 	entries           map[string]*agentEntry
+	jobs              map[string]*agentJob
+	jobGroup          sync.WaitGroup
 	closed            bool
 	allowWrites       bool // immutable after startup, before requests are accepted
 	transferCtx       context.Context
@@ -236,7 +241,7 @@ type agentEntry struct {
 	timer  *time.Timer
 }
 
-// Close ends every connection.
+// Close ends every connection and every background job running on one.
 func (b *agentBackend) Close() {
 	b.mu.Lock()
 	b.closed = true
@@ -244,10 +249,18 @@ func (b *agentBackend) Close() {
 	for _, entry := range b.entries {
 		entries = append(entries, entry)
 	}
+	jobs := make([]*agentJob, 0, len(b.jobs))
+	for _, job := range b.jobs {
+		jobs = append(jobs, job)
+	}
 	b.mu.Unlock()
 	b.transferCancel()
 	b.transferGroup.Wait()
 	b.notes.Close()
+	for _, job := range jobs {
+		job.cancel()
+	}
+	b.jobGroup.Wait()
 	for _, entry := range entries {
 		entry.mu.Lock()
 		entry.stopIdle()
@@ -442,18 +455,6 @@ func (b *agentBackend) Exec(ctx context.Context, args tools.TerminalExecArgs) (g
 		return gate.ExecResult{Output: output, Truncated: result.Truncated, TimedOut: true}, nil
 	}
 	return gate.ExecResult{}, err
-}
-
-func (b *agentBackend) JobStart(context.Context, tools.TerminalStartArgs) (gate.JobStatus, error) {
-	return gate.JobStatus{}, errAgentNoTerminal
-}
-
-func (b *agentBackend) JobPoll(context.Context, tools.TerminalPollArgs) (gate.JobStatus, error) {
-	return gate.JobStatus{}, errAgentNoTerminal
-}
-
-func (b *agentBackend) JobStop(context.Context, tools.TerminalStopArgs) (gate.JobStatus, error) {
-	return gate.JobStatus{}, errAgentNoTerminal
 }
 
 func (b *agentBackend) ListDir(ctx context.Context, args tools.SFTPListArgs) ([]gate.FileEntry, error) {
@@ -699,13 +700,27 @@ func (b *agentBackend) audited(agentGate gate.Gate, log *store.Store) func(conte
 			LocalPath  string   `json:"local_path"`
 			RemotePath string   `json:"remote_path"`
 			TransferID string   `json:"transfer_id"`
+			JobID      string   `json:"job_id"`
 			Cwd        string   `json:"cwd"`
 		}
 		_ = json.Unmarshal(raw, &call)
+		if call.JobID == "" && name == tools.NameTerminalStart {
+			var view struct {
+				JobID string `json:"job_id"`
+			}
+			if json.Unmarshal(result.Structured, &view) == nil {
+				call.JobID = view.JobID
+			}
+		}
 		ids := call.Sessions
 		if len(ids) == 0 && call.TransferID != "" {
 			if transfers, err := b.Transfers(ctx, call.TransferID); err == nil && len(transfers) == 1 {
 				ids = []string{transfers[0].Session}
+			}
+		}
+		if len(ids) == 0 && call.JobID != "" {
+			if job := b.findJob(call.JobID); job != nil {
+				ids = []string{job.entry.host.CatalogID}
 			}
 		}
 		if len(ids) == 0 && call.Session != "" {
@@ -743,6 +758,9 @@ func (b *agentBackend) audited(agentGate gate.Gate, log *store.Store) func(conte
 		}
 		if call.TransferID != "" {
 			summary = "transfer " + call.TransferID
+		}
+		if call.JobID != "" && summary == "" {
+			summary = "job " + call.JobID
 		}
 		if isNote {
 			hostIDs, labels = nil, []string{"notes"}

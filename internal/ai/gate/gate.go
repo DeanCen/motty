@@ -65,8 +65,10 @@ type Backend interface {
 	Sessions(ctx context.Context) ([]SessionInfo, error)
 	ReadTerminal(ctx context.Context, args tools.TerminalReadArgs) (string, error)
 	Exec(ctx context.Context, args tools.TerminalExecArgs) (ExecResult, error)
-	// JobStart types a command into the session's terminal and returns at once.
-	// The job belongs to OutputOwner(ctx); JobPoll and JobStop refuse any other.
+	// JobStart starts a command in the session and returns at once, giving the
+	// job id later calls use. Whether it runs in a terminal or on a connection
+	// of its own is the backend's. The job belongs to OutputOwner(ctx); JobPoll
+	// and JobStop refuse any other.
 	JobStart(ctx context.Context, args tools.TerminalStartArgs) (JobStatus, error)
 	JobPoll(ctx context.Context, args tools.TerminalPollArgs) (JobStatus, error)
 	JobStop(ctx context.Context, args tools.TerminalStopArgs) (JobStatus, error)

@@ -293,7 +293,8 @@ func SelectedUpload() Spec { return selectedUploadSpec }
 // only after the separately confirmed full access, and local transfers only
 // when explicit transfer roots were granted.
 type HeadlessOptions struct {
-	// Commands offers terminal_exec and terminal_exec_many.
+	// Commands offers terminal_exec, terminal_start, terminal_poll,
+	// terminal_stop and terminal_exec_many.
 	Commands bool
 	// WriteFiles offers sftp_write and sftp_remove (full access).
 	WriteFiles bool
@@ -312,8 +313,9 @@ type HeadlessOptions struct {
 // what changes is what the descriptions promise and which tools are offered.
 // There is no screen to read, so terminal_read is absent. A command runs through
 // an SSH exec channel, with no terminal and no shell state kept between calls,
-// and the user does not watch it run. The note tools come from ExternalNotes.
-// The slice is a copy.
+// and the user does not watch it run. The job tools put a command on a channel of
+// its own, so several can run at once and a long one does not hold up the caller.
+// The note tools come from ExternalNotes. The slice is a copy.
 func Headless(options HeadlessOptions) []Spec {
 	const (
 		sessionHint = "Session id from list_sessions. Defaults to the active session."
@@ -323,7 +325,7 @@ func Headless(options HeadlessOptions) []Spec {
 	out := make([]Spec, 0, len(specs))
 	for _, spec := range specs {
 		switch {
-		case spec.Name == NameTerminalRead, spec.Name == NameToolOutputRead, isJobTool(spec.Name), isRZSZ(spec.Name), spec.Kind == Write && !options.WriteFiles, spec.Kind == Exec && !options.Commands:
+		case spec.Name == NameTerminalRead, spec.Name == NameToolOutputRead, isJobTool(spec.Name) && !options.Commands, isRZSZ(spec.Name), spec.Kind == Write && !options.WriteFiles, spec.Kind == Exec && !options.Commands:
 			continue
 		}
 		schema := strings.ReplaceAll(string(spec.Schema), sessionHint, hostHint)
@@ -335,6 +337,12 @@ func Headless(options HeadlessOptions) []Spec {
 			spec.Description = "List saved SSH hosts the user opened to agents, with stable host ids, names and addresses, without connecting. In this server list_sessions lists the same authorized hosts; those ids can be used in tool calls."
 		case NameTerminalExec:
 			spec.Description = "Run one shell command on a saved host over a fresh SSH exec channel and return its combined output and exit status. There is no terminal: nothing interactive works, and the working directory and environment do not carry over to the next call. The user does not watch it run. It must finish within the timeout."
+		case NameTerminalStart:
+			spec.Description = "Start one shell command on a saved host over its own SSH exec channel and return a job_id at once. There is no terminal and no state carries over. Use it for builds, installs and log watching that outlive a tool call: read progress with terminal_poll and end it with terminal_stop. Several jobs may run at once, and a running job keeps its host connected."
+		case NameTerminalPoll:
+			spec.Description = "Read what a terminal_start job printed since offset (pass the previous next_offset) and its state: running, completed (exit_code), cancelled, interrupted or disconnected. pending_line is a line still being written. skipped_bytes counts output dropped unread. terminal_ready reports the host connection: ready, or closed when it dropped. Finished jobs stay readable for ten minutes."
+		case NameTerminalStop:
+			spec.Description = "End a running terminal_start job by canceling its command session. The job becomes cancelled once the command ends; nothing is sent when it had already finished. Returns the job state and where its output ends."
 		case NameTerminalExecMany:
 			spec.Description = "Run the same shell command on several saved hosts at once and return each host's combined output and exit status, labelled by host. There is no terminal and no state carries over. Use it to check or change the same thing across hosts; use terminal_exec for one host. It must finish within the timeout on every host."
 		case NameSFTPWrite:
@@ -357,8 +365,9 @@ func Headless(options HeadlessOptions) []Spec {
 }
 
 // isJobTool reports whether name is one of the terminal job tools, which need
-// an MCP client session to own the job and so are offered to external clients
-// only.
+// an MCP client session to own the job. The in-app request catalog withholds
+// them, since it has no such session; a headless server offers them when it may
+// run commands.
 func isJobTool(name string) bool {
 	return name == NameTerminalStart || name == NameTerminalPoll || name == NameTerminalStop
 }
