@@ -486,6 +486,7 @@ func openWorkbenchWindow(application *app.Application, status *tray, hub *workbe
 			}
 		},
 	}
+	config.WindowBorderColor = state.WindowBorderColor
 	// The workbench page routes the shell's own elements and the application
 	// handlers keep the events it leaves; the workbench's Paint stays its own.
 	mainWindow, err = application.OpenWindow(state.WindowConfig(config), &canvas)

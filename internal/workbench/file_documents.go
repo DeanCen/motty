@@ -766,7 +766,7 @@ func (d *fileDocument) openComparisonWindow() error {
 func (d *fileDocument) comparisonConfig() app.Config {
 	return app.Config{
 		Title: fmt.Sprintf(d.owner.messages.FileWindow.CompareWindowTitle, d.name),
-		Icon:  AppIcon(), Width: 1120, Height: 720, MinWidth: fileWindowMinWidth, MinHeight: fileWindowMinHeight, WindowMode: app.WindowCustomTitlebar, TitlebarHeight: TitlebarHeight, ClearColor: windowClearColor(d.owner.Theme().Background), Tree: Tree(),
+		Icon:  AppIcon(), Width: 1120, Height: 720, MinWidth: fileWindowMinWidth, MinHeight: fileWindowMinHeight, WindowMode: app.WindowCustomTitlebar, TitlebarHeight: TitlebarHeight, ClearColor: windowClearColor(d.owner.Theme().Background), WindowBorderColor: func() app.Color { return windowClearColor(d.owner.Theme().Background) }, Tree: Tree(),
 		Paint: d.paintComparison, TextInput: d.comparisonTextInput, OnPointer: d.comparisonPointer,
 		OnKey: d.comparisonKey, OnShortcut: d.comparisonShortcut, OnScroll: d.comparisonScroll,
 		OnCloseRequest: d.requestComparisonClose, OnClosed: d.onComparisonClosed,
