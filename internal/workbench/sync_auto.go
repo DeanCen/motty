@@ -36,6 +36,11 @@ func (state *State) scheduleSync() {
 		leader.scheduleSync()
 		return
 	}
+	if state.syncScope.empty() {
+		// Every category is closed: there is nothing to send or receive, so a
+		// change here must not open a request or keep a timer.
+		return
+	}
 	switch {
 	case state.closed || !state.sync.configured() || state.sync.manual:
 	case state.sync.working:

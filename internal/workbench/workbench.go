@@ -895,9 +895,12 @@ type State struct {
 	closeAsked    bool
 	trayHintShown bool
 	sync          syncState
-	sshSync       sshSyncState
-	remote        remoteToolsView
-	edits         externalEdits
+	// syncScope is what this computer lets cloud sync exchange. It belongs to
+	// this device, so two computers may sync different sets of content.
+	syncScope syncScope
+	sshSync   sshSyncState
+	remote    remoteToolsView
+	edits     externalEdits
 	// fontSizeText is the font size as the settings page shows it, for fontSizeShown.
 	fontSizeText         string
 	fontSizeShown        float32

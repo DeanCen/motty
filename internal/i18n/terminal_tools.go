@@ -730,6 +730,33 @@ type ToolsMessages struct {
 	SyncConfigureGist               string
 	SyncConfigureGitee              string
 	SyncErrTooLarge                 string
+	SyncScopeGroup                  string
+	SyncScopeDescription            string
+	SyncErrNothingSelected          string
+	SyncScopeHosts                  string
+	SyncScopeHostsDescription       string
+	SyncScopeSettings               string
+	SyncScopeSettingsDescription    string
+	SyncScopeNotes                  string
+	SyncScopeNotesDescription       string
+	SyncScopeSnippets               string
+	SyncScopeSnippetsDescription    string
+	SyncScopeRoutes                 string
+	SyncScopeRoutesDescription      string
+	SyncScopeForwards               string
+	SyncScopeForwardsDescription    string
+	SyncScopeWorkspaces             string
+	SyncScopeWorkspacesDescription  string
+	SyncScopeCredentials            string
+	SyncScopeCredentialsDescription string
+	SyncScopeKeys                   string
+	SyncScopeKeysDescription        string
+	SyncScopeAI                     string
+	SyncScopeAIDescription          string
+	SyncScopeRules                  string
+	SyncScopeRulesDescription       string
+	SyncScopeKnownHosts             string
+	SyncScopeKnownHostsDescription  string
 	S3DialogTitle                   string
 	S3DialogDescription             string
 	S3Endpoint                      string

@@ -254,6 +254,22 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	row(settingsBackup, tools.SyncRow, tools.SyncRowNone)
 	row(settingsBackup, tools.SyncAuto, tools.SyncAutoDescription)
 	row(settingsBackup, tools.SyncRunRow, tools.SyncRunNever)
+	for _, entry := range [...]struct{ label, description string }{
+		{tools.SyncScopeHosts, tools.SyncScopeHostsDescription},
+		{tools.SyncScopeSettings, tools.SyncScopeSettingsDescription},
+		{tools.SyncScopeNotes, tools.SyncScopeNotesDescription},
+		{tools.SyncScopeSnippets, tools.SyncScopeSnippetsDescription},
+		{tools.SyncScopeRoutes, tools.SyncScopeRoutesDescription},
+		{tools.SyncScopeForwards, tools.SyncScopeForwardsDescription},
+		{tools.SyncScopeWorkspaces, tools.SyncScopeWorkspacesDescription},
+		{tools.SyncScopeCredentials, tools.SyncScopeCredentialsDescription},
+		{tools.SyncScopeKeys, tools.SyncScopeKeysDescription},
+		{tools.SyncScopeAI, tools.SyncScopeAIDescription},
+		{tools.SyncScopeRules, tools.SyncScopeRulesDescription},
+		{tools.SyncScopeKnownHosts, tools.SyncScopeKnownHostsDescription},
+	} {
+		row(settingsBackup, entry.label, entry.description)
+	}
 
 	row(settingsAssistant, ai.ProvidersTitle, ai.Description)
 	row(settingsAssistant, ai.ModelsTitle, "")
