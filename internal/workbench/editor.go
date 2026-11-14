@@ -220,6 +220,9 @@ func (editor *hostEditor) validate(hosts []Host, ignoreID uint32, messages i18n.
 		return messages.ErrLabelRequired
 	}
 	if editor.value(fieldAddress) == "" {
+		if editor.protocol == protocolSerial {
+			return messages.ErrDeviceRequired
+		}
 		return messages.ErrAddressRequired
 	}
 	if editor.protocol == protocolSerial {

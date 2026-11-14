@@ -560,6 +560,7 @@ type Messages struct {
 	IconDesktop                 string
 	ErrLabelRequired            string
 	ErrAddressRequired          string
+	ErrDeviceRequired           string
 	ErrGroupRequired            string
 	ErrAddressTaken             string
 	ErrPortInvalid              string
