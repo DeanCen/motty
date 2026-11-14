@@ -355,12 +355,12 @@ func TestTransferCenterUploadOpensAndPreservesTheFilter(t *testing.T) {
 
 func TestTransferCenterFilterSelectionPreservedAcrossReopenAndSaved(t *testing.T) {
 	state, session, _, _ := openTestSFTP(t)
-	local := filepath.Join(t.TempDir(), "upload.txt")
-	if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 
 	for _, chosenFilter := range []int{1, 2, 3, 0} {
+		local := filepath.Join(t.TempDir(), fmt.Sprintf("upload-%d.txt", chosenFilter))
+		if err := os.WriteFile(local, []byte("hello"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		state.Click(hitTransfersFilter.At(chosenFilter))
 		if state.transfers.filter != chosenFilter {
 			t.Fatalf("clicking filter %d did not update transfers.filter: got %d", chosenFilter, state.transfers.filter)
@@ -380,11 +380,18 @@ func TestTransferCenterFilterSelectionPreservedAcrossReopenAndSaved(t *testing.T
 		if !state.transfers.open || state.transfers.filter != chosenFilter {
 			t.Fatalf("reopening transfer center lost filter: open=%v, filter=%d, want %d", state.transfers.open, state.transfers.filter, chosenFilter)
 		}
+		state.Click(hitTransfersClose)
 
-		// Queue an upload; filter must remain preserved
+		// Queue an upload. The filter is preserved, and the center opens for
+		// the new transfer only when that filter lists active work; Ended and
+		// Failed must not put an empty popover over the user's choice.
 		state.queueSFTPUpload(session.files, local, false)
-		if !state.transfers.open || state.transfers.filter != chosenFilter {
-			t.Fatalf("upload lost filter: open=%v, filter=%d, want %d", state.transfers.open, state.transfers.filter, chosenFilter)
+		wantOpen := transferFilterShows(chosenFilter, sftpclient.TransferSnapshot{State: sftpclient.TransferQueued})
+		if state.transfers.open != wantOpen || state.transfers.filter != chosenFilter {
+			t.Fatalf("upload: open=%v want %v, filter=%d want %d", state.transfers.open, wantOpen, state.transfers.filter, chosenFilter)
+		}
+		if state.transfers.open && state.transfers.scroll != 0 {
+			t.Fatalf("upload left the open center scrolled to %v", state.transfers.scroll)
 		}
 
 		// Simulate restoring state from saved preferences

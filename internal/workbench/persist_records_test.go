@@ -35,15 +35,15 @@ func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 		"background": true, "snippet_shortcuts": true,
 		"background_output_alerts": true,
 		"tab_orientation":          true, "vertical_tabs_auto_hide": true,
-		"tab_numbers":            true, "hidden_nav": true,
+		"tab_numbers": true, "hidden_nav": true,
 		"vertical_tabs_grouping": true,
 		"workspace_layouts":      true,
 		"sftp_local_bookmarks":   true,
 		"sftp_columns":           true, "sftp_download_directory": true, "default_editor": true,
 		"sftp_window_order": true, "sftp_open_mode": true, "sftp_directory_tree": true, "custom_editor_path": true,
 		"sftp_transfer_filter": true,
-		"toolbars":    true,
-		"local_shell": true, "local_start": true, "last_local_directory": true, "ssh_agent": true, "ssh_agent_path": true, "local_proxy_port": true, "terminal_cursor": true,
+		"toolbars":             true,
+		"local_shell":          true, "local_start": true, "last_local_directory": true, "ssh_agent": true, "ssh_agent_path": true, "local_proxy_port": true, "terminal_cursor": true,
 		// Whether the command bar shows, which groups it filters and how it
 		// orders them are this computer's own layout, not a preference to sync.
 		"commands_shown": true, "commands_sort": true, "commands_hidden_groups": true,
