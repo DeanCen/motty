@@ -7,6 +7,7 @@ import (
 
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/keymap"
+	"motty/internal/shellkind"
 	"motty/internal/term"
 )
 
@@ -300,6 +301,27 @@ func TestClearScreenShortcutEmptiesTheWindowAndKeepsThePromptLine(t *testing.T) 
 	}
 	if session.term.selection.selected {
 		t.Fatal("the selection outlived the rows it was pointing at")
+	}
+}
+
+func TestClearScreenSendsCtrlLToPowerShell(t *testing.T) {
+	state, _, _, shell := liveSession(t)
+	session, _ := state.sessionByIDPointer(state.activeSessionID)
+	session.term.shell = kindShell{fakeShell: shell, kind: shellkind.PowerShell}
+	shell.say("PS C:\\> ")
+	state.Wake()
+
+	shortcut := state.shortcuts.chords.Chord(shortcutClearScreen)
+	result := state.Shortcut(gfx.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: shortcut.Modifiers, Text: string(shortcut.Char)})
+	if !result.Handled {
+		t.Fatalf("the clear screen chord was not handled: %+v", result)
+	}
+
+	shell.mu.Lock()
+	input := string(shell.input)
+	shell.mu.Unlock()
+	if !strings.Contains(input, "\x0c") {
+		t.Fatalf("shell input = %q, want form feed (\\x0c) for PowerShell", input)
 	}
 }
 
