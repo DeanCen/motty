@@ -325,6 +325,85 @@ func TestClearScreenSendsCtrlLToPowerShell(t *testing.T) {
 	}
 }
 
+func TestClearScreenSendsCtrlLAtAnIntegratedPowerShellPrompt(t *testing.T) {
+	state, _, _, shell := liveSession(t)
+	session, _ := state.sessionByIDPointer(state.activeSessionID)
+	session.term.shell = kindShell{fakeShell: shell, kind: shellkind.PowerShell}
+	session.term.folderIntegrationSeen = true
+	session.term.inputLine = true
+	shell.say("PS C:\\> ")
+	state.Wake()
+
+	state.clearScreenShortcut(t)
+
+	shell.mu.Lock()
+	input := string(shell.input)
+	shell.mu.Unlock()
+	if !strings.Contains(input, "\x0c") {
+		t.Fatalf("shell input = %q, want form feed (\\x0c) at a PowerShell prompt", input)
+	}
+}
+
+func TestClearScreenDoesNotTypeCtrlLIntoAForegroundProgram(t *testing.T) {
+	state, _, _, shell := liveSession(t)
+	session, _ := state.sessionByIDPointer(state.activeSessionID)
+	session.term.shell = kindShell{fakeShell: shell, kind: shellkind.PowerShell}
+	session.term.folderIntegrationSeen = true
+	session.term.inputLine = false // a command owns the screen, not the line editor
+	shell.say("Password: ")
+	state.Wake()
+
+	state.clearScreenShortcut(t)
+
+	shell.mu.Lock()
+	input := string(shell.input)
+	shell.mu.Unlock()
+	if strings.Contains(input, "\x0c") {
+		t.Fatalf("shell input = %q, want no form feed while a program reads input", input)
+	}
+}
+
+func TestClearScreenLeavesOtherShellsAndTransfersAlone(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		kind     shellkind.Kind
+		transfer bool
+	}{
+		{name: "posix", kind: shellkind.POSIX},
+		{name: "unknown", kind: shellkind.Unknown},
+		{name: "transfer owns input", kind: shellkind.PowerShell, transfer: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state, _, _, shell := liveSession(t)
+			session, _ := state.sessionByIDPointer(state.activeSessionID)
+			session.term.shell = kindShell{fakeShell: shell, kind: test.kind}
+			session.term.transferHoldsInput = test.transfer
+			shell.say("prompt$ ")
+			state.Wake()
+
+			state.clearScreenShortcut(t)
+
+			shell.mu.Lock()
+			input := string(shell.input)
+			shell.mu.Unlock()
+			if strings.Contains(input, "\x0c") {
+				t.Fatalf("shell input = %q, want no form feed", input)
+			}
+		})
+	}
+}
+
+// clearScreenShortcut runs the default clear-screen chord and fails when the
+// terminal does not handle it.
+func (state *State) clearScreenShortcut(t *testing.T) {
+	t.Helper()
+	shortcut := state.shortcuts.chords.Chord(shortcutClearScreen)
+	result := state.Shortcut(gfx.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: shortcut.Modifiers, Text: string(shortcut.Char)})
+	if !result.Handled {
+		t.Fatalf("the clear screen chord was not handled: %+v", result)
+	}
+}
+
 func TestTheClearScreenShortcutIsCustomisableAndPersists(t *testing.T) {
 	options := freshOptions(t)
 	state := newTestState(t, options)

@@ -518,9 +518,23 @@ func (t *terminal) clearScreen(messages i18n.Messages) {
 			delete(t.aiRows, id)
 		}
 	}
-	if t.shell != nil && !t.transferHoldsInput && t.shellKind() == shellkind.PowerShell {
+	if t.shell != nil && !t.transferHoldsInput && t.powerShellLineEditorOwnsInput() {
 		t.writeShellInput([]byte{12})
 	}
+}
+
+// powerShellLineEditorOwnsInput reports whether sending a form feed reaches
+// PowerShell's line editor rather than a program the user started from it. A
+// shell that reports its integration state also reports when a command starts;
+// while one runs, the same bytes would become that program's input, so the
+// clear is left without the reset and the next prompt may still name the old
+// row. Shells that never report integration cannot tell the two apart, and
+// there the form feed is the only way to fix the prompt row.
+func (t *terminal) powerShellLineEditorOwnsInput() bool {
+	if t.shellKind() != shellkind.PowerShell {
+		return false
+	}
+	return !t.folderIntegrationSeen || t.inputLine
 }
 
 // setEncoding chooses the charset of the shell's byte stream. It is called once
