@@ -22,6 +22,7 @@ var (
 	hitSFTPMenuRename       = tree.ID(sftpMenuHits, "sftp-menu-rename")
 	hitSFTPMenuMove         = tree.ID(sftpMenuHits, "sftp-menu-move")
 	hitSFTPMenuChmod        = tree.ID(sftpMenuHits, "sftp-menu-chmod")
+	hitSFTPMenuChown        = tree.ID(sftpMenuHits, "sftp-menu-chown")
 	hitSFTPMenuExtract      = tree.ID(sftpMenuHits, "sftp-menu-extract")
 	hitSFTPMenuCompress     = tree.ID(sftpMenuHits, "sftp-menu-compress")
 	hitSFTPMenuDelete       = tree.ID(sftpMenuHits, "sftp-menu-delete")
@@ -51,6 +52,8 @@ func sftpMenuAction(id gfx.ID) (gfx.ID, bool) {
 		return hitSFTPMove, true
 	case hitSFTPMenuChmod:
 		return hitSFTPChmod, true
+	case hitSFTPMenuChown:
+		return hitSFTPChown, true
 	case hitSFTPMenuExtract:
 		return hitSFTPExtract, true
 	case hitSFTPMenuCompress:
@@ -211,6 +214,9 @@ func (state *State) sftpMenuRows(session *Session, view *sftpView) menuRows {
 	}
 	if one && !local {
 		rows.add(components.ContextMenuItem{ID: hitSFTPMenuChmod, Label: messages.SFTPPermissions, Icon: icon(iconLock), Disabled: busy})
+		if sftpOwnershipAvailable(session, view) {
+			rows.add(components.ContextMenuItem{ID: hitSFTPMenuChown, Label: messages.SFTPOwnership, Icon: icon(iconWrench), Disabled: busy})
+		}
 		if _, archive := state.selectedArchive(session, view); archive {
 			rows.add(components.ContextMenuItem{ID: hitSFTPMenuExtract, Label: messages.Tools.Extract, Icon: icon(iconArchive), Disabled: busy})
 		}

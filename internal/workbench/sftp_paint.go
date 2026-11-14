@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -364,6 +365,9 @@ func (state *State) declareSFTPPanel(c ui.C) {
 						}
 						add(hitSFTPRename, iconPencil, messages.SFTPRename, false)
 						add(hitSFTPChmod, iconLock, messages.SFTPPermissions, false)
+						if sftpOwnershipAvailable(session, view) {
+							add(hitSFTPChown, iconWrench, messages.SFTPOwnership, false)
+						}
 						if _, archive := state.selectedArchive(session, view); archive {
 							add(hitSFTPExtract, iconArchive, messages.Tools.Extract, false)
 						}
@@ -937,6 +941,11 @@ func (state *State) declareSFTPDialog(c ui.C, viewport gfx.Rect, view *sftpView)
 		description = messages.SFTPPermissionsDescription
 		fieldLabel = messages.SFTPPermissionsMode
 		submitLabel = messages.SFTPPermissionsSubmit
+	case sftpDialogChown:
+		title = messages.SFTPOwnershipTitle
+		description = messages.SFTPOwnershipDescription
+		fieldLabel = messages.SFTPPermissionsOwner
+		submitLabel = messages.SFTPPermissionsSubmit
 	case sftpDialogSymlink:
 		title = messages.Tools.LinkTitle
 		fieldLabel = messages.Tools.LinkName
@@ -973,8 +982,8 @@ func (state *State) declareSFTPDialog(c ui.C, viewport gfx.Rect, view *sftpView)
 	showError := view.dialog == sftpDialogDelete && view.dialogError != ""
 	body := float32(0) // a confirmation is only its text
 	switch {
-	case view.dialog == sftpDialogSymlink:
-		body = 6 + 64 + 8 + 64 // the link's name and where it points
+	case view.dialog == sftpDialogSymlink, view.dialog == sftpDialogChown:
+		body = 6 + 64 + 8 + 64 // two fields: the link's name and target, or the owner and group
 	case view.dialog == sftpDialogChmod:
 		// The octal field, then the permission grid: a 16px header row and
 		// three 24px rows, with a 4px gap between them.
@@ -986,6 +995,7 @@ func (state *State) declareSFTPDialog(c ui.C, viewport gfx.Rect, view *sftpView)
 	}
 	view.dialogFieldLabel = fieldLabel
 	view.dialogCancelLabel, view.dialogSubmitLabel, view.dialogSubmitVariant = cancelLabel, submitLabel, submitVariant
+	view.dialogViewport = viewport
 	// No scrim dismiss: a press beside the form must not discard its input.
 	height := dialogContentHeight(c.Canvas(), *c.Theme(), viewport, 520, description, body)
 	dialog := ui.Dialog(c, ui.DialogSpec{
@@ -1019,6 +1029,10 @@ func (state *State) paintSFTPDialogDetails(canvas *gfx.Canvas, view *sftpView) {
 	if !sftpDialogShowsField(view.dialog) {
 		return
 	}
+	if view.dialog == sftpDialogChown {
+		state.paintSFTPOwnership(canvas, view)
+		return
+	}
 	messages, theme := state.messages, state.Theme()
 	fieldLabel := view.dialogFieldLabel
 	field := components.BeginField(canvas, theme, view.dialogFirst.Rect())
@@ -1049,6 +1063,94 @@ func (state *State) paintSFTPDialogDetails(canvas *gfx.Canvas, view *sftpView) {
 	}
 }
 
+// paintSFTPOwnership paints the ownership dialog's two editable suggestion
+// fields. Each opens a filtered list of the accounts the server's files name;
+// the text stays free, so an account those files do not list can still be
+// typed as a name or a numeric id.
+func (state *State) paintSFTPOwnership(canvas *gfx.Canvas, view *sftpView) {
+	messages, theme := state.messages, state.Theme()
+	labels := [2]string{messages.SFTPPermissionsOwner, messages.SFTPPermissionsGroup}
+	boxes := [2]ui.Box{view.dialogFirst, view.dialogSecond}
+	for field := range 2 {
+		id := hitSFTPDialogField
+		if field == 1 {
+			id = hitSFTPDialogField2
+		}
+		editor := view.ownershipEditor(field)
+		// A typed change opens the suggestions. The query is kept because the
+		// docked window edits the field through EditorFor, which has no event
+		// callback; the field comparison is what a text event would tell us.
+		if canvas.Focused() == id && editor.String() != view.ownership.lastQuery[field] {
+			view.ownership.open[field] = true
+			view.ownership.highlighted[field] = 0
+			view.ownership.lastQuery[field] = editor.String()
+		}
+		group := components.BeginField(canvas, theme, boxes[field].Rect())
+		if view.dialogError != "" {
+			group = group.Invalid()
+		}
+		errorText := ""
+		if field == 0 {
+			errorText = view.dialogError
+		}
+		input := group.Paint(labels[field], "", errorText)
+		open := view.ownership.open[field]
+		query := editor.String()
+		options := components.ComboboxOptions{
+			InputID: id, Label: labels[field], Value: query, Query: query,
+			Placeholder: labels[field], Open: open, Invalid: view.dialogError != "",
+			ShowTrigger: true, Layer: dialogLayer + 1, Scope: dialogScope,
+			DismissID: hitSFTPChownDismiss, Viewport: view.dialogViewport,
+		}
+		var matches []sftpAccountOption
+		if open {
+			matches = view.ownership.matches(field, query)
+			options.Content = sftpOwnershipPopupRect(input, len(matches), view.dialogViewport)
+			options.MatchInputWidth = true
+		}
+		combo := components.BeginCombobox(canvas, theme, input, options)
+		if open {
+			if len(matches) == 0 {
+				combo.AddEmpty(messages.SFTPOwnershipNoMatches)
+			}
+			for index, account := range matches {
+				combo.AddItem(components.ComboboxItem{
+					ID:          ownershipItemScope(field).At(index),
+					Label:       account.name,
+					Detail:      strconv.FormatUint(uint64(account.id), 10),
+					Selected:    query == account.name,
+					Highlighted: index == view.ownership.highlighted[field],
+				})
+			}
+		}
+		combo.End()
+	}
+}
+
+// sftpOwnershipPopupRect places the suggestion list under its field, or above
+// it when the bottom of the window is closer.
+func sftpOwnershipPopupRect(input gfx.Rect, rows int, viewport gfx.Rect) gfx.Rect {
+	height := float32(8 + 36) // the empty result
+	if rows > 0 {
+		height = float32(8 + rows*32)
+	}
+	x := input.X
+	if right := viewport.X + viewport.Width; x+input.Width > right {
+		x = right - input.Width
+	}
+	if x < viewport.X {
+		x = viewport.X
+	}
+	y := input.Y + input.Height + 8
+	if bottom := viewport.Y + viewport.Height - 8; y+height > bottom {
+		y = input.Y - 8 - height
+	}
+	if y < viewport.Y+8 {
+		y = viewport.Y + 8
+	}
+	return gfx.Rect{X: x, Y: y, Width: input.Width, Height: height}
+}
+
 // declareSFTPDialogBody lays out the dialog's body: one labelled input, two for
 // a link, the permission grid under a chmod field, or the error of a failed
 // move when that is what the dialog says. The parts painted by hand are kept in
@@ -1069,7 +1171,7 @@ func (state *State) declareSFTPDialogBody(c ui.C, view *sftpView) {
 		case sftpDialogShowsField(view.dialog):
 			ui.Column(c).Shrink(0).Gap(8).PadSides(6, 4, 0, 4).Children(func() {
 				view.dialogFirst = ui.Slot(c).Height(64).Shrink(0)
-				if view.dialog == sftpDialogSymlink {
+				if view.dialog == sftpDialogSymlink || view.dialog == sftpDialogChown {
 					view.dialogSecond = ui.Slot(c).Height(64).Shrink(0)
 				}
 				if view.dialog == sftpDialogChmod {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,6 +62,7 @@ const (
 	OperationRemoveFile
 	OperationRemoveDirectory
 	OperationChmod
+	OperationChown
 	OperationOpenText
 	OperationSaveText
 	OperationSymlink
@@ -172,10 +174,13 @@ type Result struct {
 	LocalPath   string
 	Destination string
 	Mode        os.FileMode
-	Bytes       int64
-	Files       int
-	Resumed     int64
-	Document    TextDocument
+	// Owner and Group echo the user and group an ownership change was asked
+	// for, as the caller named them.
+	Owner, Group string
+	Bytes        int64
+	Files        int
+	Resumed      int64
+	Document     TextDocument
 	// Approximate marks a listing read from `ls` output because the server has
 	// no SFTP: names are exact, times and link details may not be.
 	Approximate bool
@@ -234,6 +239,8 @@ type request struct {
 	local       string
 	destination string
 	mode        os.FileMode
+	owner       string
+	group       string
 	text        string
 	revision    Revision
 	utf8BOM     bool
@@ -313,6 +320,10 @@ type remoteLinker interface {
 
 type remoteChmod interface {
 	Chmod(path string, mode os.FileMode) error
+}
+
+type remoteChown interface {
+	Chown(path string, uid, gid uint32) error
 }
 
 type remoteLinks interface {
@@ -503,6 +514,13 @@ func (worker *Worker) preserveTimes() bool {
 
 func (worker *Worker) Chmod(remotePath string, mode os.FileMode) bool {
 	return worker.enqueue(request{operation: OperationChmod, remote: remotePath, mode: mode})
+}
+
+// Chown changes a remote path's owner and group. owner and group are names the
+// server's account files list or numeric ids; names are resolved on the worker,
+// where reading those files costs no round trip the caller has to wait for.
+func (worker *Worker) Chown(remotePath, owner, group string) bool {
+	return worker.enqueue(request{operation: OperationChown, remote: remotePath, owner: owner, group: group})
 }
 
 // OpenText reads one explicitly selected remote file into the bounded UTF-8
@@ -1096,6 +1114,7 @@ func (worker *Worker) execute(next request) Result {
 		Background: next.background,
 		Operation:  next.operation, TransferID: next.id, Path: next.remote,
 		LocalPath: next.local, Destination: next.destination, Mode: next.mode,
+		Owner: next.owner, Group: next.group,
 	}
 	generation := worker.snapshot()
 	client, err := worker.remote(generation)
@@ -1157,6 +1176,8 @@ func (worker *Worker) execute(next request) Result {
 		result.Err = worker.removeDirectory(client, next.remote, generation)
 	case OperationChmod:
 		result.Err = chmod(client, next.remote, next.mode)
+	case OperationChown:
+		result.Err = worker.chown(client, next.remote, next.owner, next.group, generation)
 	case OperationSymlink:
 		result.Err = symlink(client, next.remote, next.destination)
 	case OperationOpenText:
@@ -1266,24 +1287,39 @@ func (worker *Worker) listNames(client Remote, remotePath string, generation uin
 // describeOwners fills in the names of the owners and groups a listing carries
 // as numbers. It reads the account files once, on the first listing.
 func (worker *Worker) describeOwners(client Remote, entries []Entry) {
-	worker.mu.Lock()
-	tried := worker.idsTried
-	worker.idsTried = true
-	worker.mu.Unlock()
-	if !tried {
-		ids := loadIDNames(client)
-		worker.mu.Lock()
-		worker.ids = ids
-		worker.mu.Unlock()
-	}
-	worker.mu.Lock()
-	ids := worker.ids
-	worker.mu.Unlock()
+	ids := worker.idNames(client)
 	for index := range entries {
 		if entry := &entries[index]; entry.HasOwner {
 			entry.Owner, entry.Group = ids.Users[entry.UID], ids.Groups[entry.GID]
 		}
 	}
+}
+
+// Accounts returns the user and group names the server's account files gave,
+// for a picker that offers them. It is the same snapshot the listing used for
+// displaying owners; the maps are read-only and empty until a listing read the
+// files.
+func (worker *Worker) Accounts() IDNames {
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	return worker.ids
+}
+
+// idNames returns the account files' user and group names, reading them on
+// first use. A server that does not expose them leaves the maps empty, and
+// numeric ids keep working.
+func (worker *Worker) idNames(client Remote) IDNames {
+	worker.mu.Lock()
+	tried, ids := worker.idsTried, worker.ids
+	worker.mu.Unlock()
+	if tried {
+		return ids
+	}
+	ids = loadIDNames(client)
+	worker.mu.Lock()
+	worker.ids, worker.idsTried = ids, true
+	worker.mu.Unlock()
+	return ids
 }
 
 // resolveLinks resolves the symbolic links of a published listing and then
@@ -3038,6 +3074,49 @@ func chmod(client Remote, remotePath string, mode os.FileMode) error {
 		return fmt.Errorf("sftp: chmod is not supported by the remote")
 	}
 	return changer.Chmod(remotePath, mode)
+}
+
+// chown resolves the user and group the caller named and changes one path's
+// owner. SFTP carries ids, not names, so a name is looked up in the account
+// files the listing already read; a numeric id needs no lookup.
+func (worker *Worker) chown(client Remote, remotePath, owner, group string, generation uint64) error {
+	if remotePath == "" {
+		return fmt.Errorf("sftp: chown requires a remote path")
+	}
+	if owner == "" || group == "" {
+		return fmt.Errorf("sftp: chown requires an owner and a group")
+	}
+	changer, ok := client.(remoteChown)
+	if !ok {
+		return fmt.Errorf("sftp: ownership is not supported by the remote")
+	}
+	ids := worker.idNames(client)
+	uid, err := namedRequestID(ids.Users, owner, "user")
+	if err != nil {
+		return err
+	}
+	gid, err := namedRequestID(ids.Groups, group, "group")
+	if err != nil {
+		return err
+	}
+	if worker.canceled(generation) {
+		return ErrCanceled
+	}
+	return changer.Chown(remotePath, uid, gid)
+}
+
+// namedRequestID accepts a numeric id as typed, or the name the account file
+// lists for it.
+func namedRequestID(names map[uint32]string, value, kind string) (uint32, error) {
+	if id, err := strconv.ParseUint(value, 10, 32); err == nil {
+		return uint32(id), nil
+	}
+	for id, name := range names {
+		if name == value {
+			return id, nil
+		}
+	}
+	return 0, fmt.Errorf("sftp: the server has no %s named %q", kind, value)
 }
 
 func symlink(client Remote, linkPath, target string) error {

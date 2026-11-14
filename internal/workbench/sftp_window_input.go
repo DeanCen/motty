@@ -924,6 +924,9 @@ func (w *sftpWindow) key(event gfx.KeyEvent) gfx.EventResult {
 	if result, handled := w.profileQuickKey(event); handled {
 		return result
 	}
+	if result, handled := w.owner.sftpOwnershipKey(w.view, event); handled {
+		return result
+	}
 	if event.Key == gfx.KeyEscape {
 		if w.closeConfirm {
 			w.click(hitSFTPWindowCloseCancel)

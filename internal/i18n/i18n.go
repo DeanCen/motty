@@ -1120,6 +1120,14 @@ type Messages struct {
 	SFTPErrModeInvalid          string
 	SFTPChangingPermissionsFmt  string
 	SFTPPermissionsChangedFmt   string
+	SFTPOwnership               string
+	SFTPOwnershipTitle          string
+	SFTPOwnershipDescription    string
+	SFTPOwnershipNoMatches      string
+	SFTPErrOwnershipRequired    string
+	SFTPErrOwnershipInvalid     string
+	SFTPChangingOwnershipFmt    string
+	SFTPOwnershipChangedFmt     string
 	SFTPEditOpeningFmt          string
 	SFTPEditBack                string
 	SFTPEditSave                string

@@ -290,7 +290,11 @@ var (
 	hitSFTPMove            = tree.ID(sftpHits, "sftp-move")
 	hitSFTPDelete          = tree.ID(sftpHits, "sftp-delete")
 	hitSFTPChmod           = tree.ID(sftpHits, "sftp-chmod")
-	hitSFTPChmodBits       = tree.Sub(sftpHits, tree.Name("sftp-chmod-bit")) // + the bit index
+	hitSFTPChown           = tree.ID(sftpHits, "sftp-chown")
+	hitSFTPChownDismiss    = tree.ID(sftpHits, "sftp-chown-dismiss")
+	hitSFTPChownUserItem   = tree.Sub(sftpHits, tree.Name("sftp-chown-user"))  // + the match index
+	hitSFTPChownGroupItem  = tree.Sub(sftpHits, tree.Name("sftp-chown-group")) // + the match index
+	hitSFTPChmodBits       = tree.Sub(sftpHits, tree.Name("sftp-chmod-bit"))   // + the bit index
 	hitSFTPDialogClose     = tree.ID(sftpHits, "sftp-dialog-close")
 	hitSFTPDialogCancel    = tree.ID(sftpHits, "sftp-dialog-cancel")
 	hitSFTPDialogSubmit    = tree.ID(sftpHits, "sftp-dialog-submit")
