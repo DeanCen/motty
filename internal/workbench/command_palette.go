@@ -158,16 +158,14 @@ func (state *State) rebuildCommandPalette() {
 		state.rebuildSnippetPicker()
 		return
 	}
-	palette.add(messages.NavHosts, hitHosts)
-	palette.add(messages.NavWorkspaces, hitWorkspaces)
-	palette.add(messages.NavKeychain, hitKeychain)
-	palette.add(messages.NavPortForwarding, hitPortForwarding)
-	palette.add(messages.NavProxies, hitProxies)
-	palette.add(messages.NavKnownHosts, hitKnownHosts)
+	// The sidebar's pages are the palette's navigation: the table that orders the
+	// sidebar also names each page here, and each page's label is the one the
+	// sidebar shows. A page added there is reachable from the palette without
+	// being added a second time, which is how the monitor page went missing.
+	for _, page := range sidebarPages {
+		palette.add(state.navPageLabel(page.page), page.id)
+	}
 	palette.add(messages.NavSettings, hitSettings)
-	palette.add(messages.NavSnippets, hitSnippets)
-	palette.add(state.noteText("Notes", "笔记"), hitNotes)
-	palette.add(messages.SessionLogs.Title, hitSessionLogs)
 	state.devAddPaletteCommands(palette)
 	if state.options.NewWindow != nil {
 		palette.add(messages.NewWindow, hitNewWindow)
