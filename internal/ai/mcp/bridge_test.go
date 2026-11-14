@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,6 +64,105 @@ func TestBridgeWrongTokenAndUnreachable(t *testing.T) {
 	lines = runBridge(t, url, testToken, `{"jsonrpc":"2.0","id":"a","method":"ping"}`)
 	if len(lines) != 1 || !strings.Contains(lines[0], `"id":"a"`) || !strings.Contains(lines[0], "error") {
 		t.Fatalf("%q", lines)
+	}
+}
+
+// switchableHandler is an HTTP handler whose target can be replaced, the way a
+// restarted application answers with a new, empty session table.
+type switchableHandler struct{ target atomic.Value }
+
+func (h *switchableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.target.Load().(http.Handler).ServeHTTP(w, r)
+}
+
+func newBridgePipe(t *testing.T, url string) (io.WriteCloser, *bufio.Reader, <-chan error) {
+	t.Helper()
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		done <- Bridge(context.Background(), inR, outW, url+Path, testToken, nil)
+		outW.Close()
+	}()
+	t.Cleanup(func() { inW.Close() })
+	return inW, bufio.NewReader(outR), done
+}
+
+func sendBridgeLine(t *testing.T, in io.Writer, line string) {
+	t.Helper()
+	if _, err := io.WriteString(in, line+"\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readBridgeLine(t *testing.T, br *bufio.Reader) string {
+	t.Helper()
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("no reply: %v", err)
+	}
+	return strings.TrimSpace(line)
+}
+
+func TestBridgeStartsANewSessionWhenTheServerForgotIt(t *testing.T) {
+	first, err := New(Config{Token: testToken, Gate: func() gate.Gate { return okGate(&fakeBackend{}) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(Config{Token: testToken, Gate: func() gate.Gate { return okGate(&fakeBackend{}) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target switchableHandler
+	target.target.Store(first.Handler())
+	ts := httptest.NewServer(&target)
+	t.Cleanup(ts.Close)
+	in, br, done := newBridgePipe(t, ts.URL)
+
+	sendBridgeLine(t, in, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
+	if got := readBridgeLine(t, br); !strings.Contains(got, `"protocolVersion":"2025-06-18"`) {
+		t.Fatalf("initialize: %s", got)
+	}
+
+	// The application restarted; the session the bridge holds is gone.
+	target.target.Store(second.Handler())
+	sendBridgeLine(t, in, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}`)
+	got := readBridgeLine(t, br)
+	if !strings.Contains(got, `"id":2`) || !strings.Contains(got, "web:22") {
+		t.Fatalf("call after the restart: %s", got)
+	}
+	if strings.Contains(got, "motty-bridge") {
+		t.Fatalf("the bridge's own initialize reached the client: %s", got)
+	}
+	in.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("bridge: %v", err)
+	}
+}
+
+func TestBridgeReportsWhenItCannotStartANewSession(t *testing.T) {
+	first, err := New(Config{Token: testToken, Gate: func() gate.Gate { return okGate(&fakeBackend{}) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target switchableHandler
+	target.target.Store(first.Handler())
+	ts := httptest.NewServer(&target)
+	t.Cleanup(ts.Close)
+	in, br, done := newBridgePipe(t, ts.URL)
+
+	sendBridgeLine(t, in, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
+	readBridgeLine(t, br)
+
+	target.target.Store(http.NotFoundHandler())
+	sendBridgeLine(t, in, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}`)
+	got := readBridgeLine(t, br)
+	if !strings.Contains(got, `"id":2`) || !strings.Contains(got, "could not start a new one") {
+		t.Fatalf("failed renewal: %s", got)
+	}
+	in.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("bridge: %v", err)
 	}
 }
 

@@ -116,7 +116,9 @@ MCP 会话（`Mcp-Session-Id`），其他会话读取或停止会得到“job no
 MOTTY_MCP_TOKEN=<令牌> motty mcp-bridge --url http://127.0.0.1:<端口>/mcp
 ```
 
-令牌放在环境变量里，因为命令行参数会出现在进程列表中。
+令牌放在环境变量里，因为命令行参数会出现在进程列表中。Motty 重启后桥接会自行
+建立新会话，客户端不必重启；直接使用 HTTP 的客户端在收到带 `MCP session not
+found` 的 404 时重新 initialize 即可。
 
 ## 不开窗口
 

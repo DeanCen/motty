@@ -39,7 +39,7 @@ func Bridge(ctx context.Context, in io.Reader, out io.Writer, endpoint, token st
 		mu      sync.Mutex
 		wg      sync.WaitGroup
 		sem     = make(chan struct{}, maxBridgeInFlight)
-		session bridgeSession
+		session = newBridgeSession()
 	)
 	write := func(b []byte) {
 		mu.Lock()
@@ -88,7 +88,7 @@ loop:
 			go func() {
 				defer wg.Done()
 				defer func() { <-sem }()
-				forward(ctx, client, endpoint, token, line, &session, write)
+				forward(ctx, client, endpoint, token, line, session, write)
 			}()
 		}
 	}
@@ -131,34 +131,142 @@ func readLine(br *bufio.Reader) (line []byte, tooLong bool, err error) {
 	}
 }
 
+// bridgeSession is the upstream HTTP session the bridge keeps for its client.
+// The client initialized with the bridge and has no session of its own, so the
+// bridge owns it: when the server forgets the session (it restarted, or the
+// session was evicted), the bridge starts a new one and the client never sees
+// the 404.
 type bridgeSession struct {
-	mu sync.Mutex
-	id string
+	mu   sync.Mutex
+	id   string
+	init json.RawMessage // the client's initialize params, repeated for a new session
+	// renewing has one slot and serialises starting a new upstream session, so
+	// concurrent requests that all hit the 404 share one handshake and keep
+	// one owner for retained output.
+	renewing chan struct{}
+}
+
+func newBridgeSession() *bridgeSession { return &bridgeSession{renewing: make(chan struct{}, 1)} }
+
+func (s *bridgeSession) sessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.id
+}
+
+func (s *bridgeSession) setID(id string) {
+	s.mu.Lock()
+	s.id = id
+	s.mu.Unlock()
+}
+
+func (s *bridgeSession) rememberInitialize(params json.RawMessage) {
+	s.mu.Lock()
+	s.init = append(json.RawMessage(nil), params...)
+	s.mu.Unlock()
+}
+
+// renew starts a new upstream session after the server answered 404 for stale.
+func (s *bridgeSession) renew(ctx context.Context, client *http.Client, endpoint, token, stale string) error {
+	select {
+	case s.renewing <- struct{}{}:
+		defer func() { <-s.renewing }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	s.mu.Lock()
+	current, params := s.id, s.init
+	s.mu.Unlock()
+	if current != "" && current != stale {
+		return nil // another request already started a session
+	}
+	id, err := startSession(ctx, client, endpoint, token, params)
+	if err != nil {
+		return err
+	}
+	s.setID(id)
+	return nil
+}
+
+// startSession opens an upstream session for the bridge itself. Its initialize
+// reply is consumed here: the client already initialized with the bridge and
+// must not see a second one.
+func startSession(ctx context.Context, client *http.Client, endpoint, token string, params json.RawMessage) (string, error) {
+	if len(params) == 0 || string(params) == "null" {
+		params = json.RawMessage(`{"protocolVersion":"` + supportedVersions[0] + `"}`)
+	}
+	body, err := json.Marshal(struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      string          `json:"id"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params"`
+	}{"2.0", "motty-bridge", "initialize", params})
+	if err != nil {
+		return "", err
+	}
+	resp, err := send(ctx, client, endpoint, token, "", body)
+	if err != nil {
+		return "", err
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBridgeReply))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Motty answered HTTP %d", resp.StatusCode)
+	}
+	id := resp.Header.Get("Mcp-Session-Id")
+	if id == "" {
+		return "", errors.New("Motty answered initialize without a session id")
+	}
+	notice := []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	resp, err = send(ctx, client, endpoint, token, id, notice)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return "", fmt.Errorf("Motty answered HTTP %d", resp.StatusCode)
+	}
+	return id, nil
+}
+
+// send posts one JSON-RPC body to the endpoint.
+func send(ctx context.Context, client *http.Client, endpoint, token, sessionID string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	return client.Do(req)
 }
 
 // forward posts one line and writes every JSON-RPC message it produced.
 func forward(ctx context.Context, client *http.Client, endpoint, token string, line []byte, session *bridgeSession, write func([]byte)) {
-	id := lineID(line)
+	var request struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	_ = json.Unmarshal(line, &request)
+	var id json.RawMessage
+	if len(request.ID) > 0 && validID(request.ID) {
+		id = request.ID
+	}
 	fail := func(msg string) {
 		if id == nil {
 			return // a notification gets no reply, not even an error
 		}
 		write(errorResponse(id, codeTransport, msg))
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(line))
-	if err != nil {
-		fail("bad endpoint")
-		return
+	if request.Method == "initialize" {
+		session.rememberInitialize(request.Params)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	session.mu.Lock()
-	if session.id != "" {
-		req.Header.Set("Mcp-Session-Id", session.id)
-	}
-	session.mu.Unlock()
-	resp, err := client.Do(req)
+	used := session.sessionID()
+	resp, err := send(ctx, client, endpoint, token, used, line)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -166,11 +274,27 @@ func forward(ctx context.Context, client *http.Client, endpoint, token string, l
 		fail("cannot reach Motty: " + errText(err))
 		return
 	}
+	if resp.StatusCode == http.StatusNotFound && used != "" {
+		// The server no longer knows the session. The request was refused
+		// before any tool ran, so starting a new session and sending it again
+		// cannot repeat work.
+		resp.Body.Close()
+		if rerr := session.renew(ctx, client, endpoint, token, used); rerr != nil {
+			fail("Motty forgot the session and the bridge could not start a new one: " + errText(rerr))
+			return
+		}
+		resp, err = send(ctx, client, endpoint, token, session.sessionID(), line)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			fail("cannot reach Motty: " + errText(err))
+			return
+		}
+	}
 	defer resp.Body.Close()
 	if got := resp.Header.Get("Mcp-Session-Id"); got != "" {
-		session.mu.Lock()
-		session.id = got
-		session.mu.Unlock()
+		session.setID(got)
 	}
 	if mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err == nil && mt == "text/event-stream" {
 		if resp.StatusCode != http.StatusOK {

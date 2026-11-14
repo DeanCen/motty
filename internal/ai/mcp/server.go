@@ -41,6 +41,10 @@ const (
 	DefaultMaxBody     int64 = 1 << 20
 	DefaultCallTimeout       = 5 * time.Minute
 	maxBatch                 = 16
+	// maxSessions bounds the session table. A session is an id and its last
+	// use; retained output expires on its own, so an unused session holds
+	// nothing worth an idle timeout.
+	maxSessions = 128
 )
 
 // Protocol versions this server speaks, newest first.
@@ -97,10 +101,11 @@ type Server struct {
 	base   context.Context
 	cancel context.CancelFunc
 
-	mu       sync.Mutex // guards http and closed: Serve and Shutdown may race
+	mu       sync.Mutex // guards http, closed, sessions and seq: Serve and Shutdown may race
 	http     *http.Server
 	closed   bool
-	sessions map[string]time.Time
+	sessions map[string]uint64 // session id -> last use, in seq order
+	seq      uint64
 }
 
 // New validates cfg and builds a Server.
@@ -125,7 +130,7 @@ func New(cfg Config) (*Server, error) {
 		timeout:   cfg.CallTimeout,
 		dispatch:  cfg.Dispatch,
 		allowed:   make(map[string]bool),
-		sessions:  make(map[string]time.Time),
+		sessions:  make(map[string]uint64),
 	}
 	s.guidance = cfg.Instructions
 	if s.guidance == "" {
@@ -278,16 +283,21 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	if id := r.Header.Get("Mcp-Session-Id"); id != "" {
+		// A session has no idle timeout while the server runs. The id is not a
+		// credential (every request carries the bearer token); it only scopes
+		// retained output, whose own lifetime is ten minutes. Expiring an idle
+		// session made clients that treat 404 as fatal, instead of starting a
+		// new session, fail every call after thirty quiet minutes.
 		s.mu.Lock()
-		expires, ok := s.sessions[id]
-		if ok && time.Now().Before(expires) {
-			s.sessions[id] = time.Now().Add(30 * time.Minute)
-		} else {
-			ok = false
-			delete(s.sessions, id)
+		_, ok := s.sessions[id]
+		if ok {
+			s.seq++
+			s.sessions[id] = s.seq
 		}
 		s.mu.Unlock()
 		if !ok {
+			// The MCP spec requires 404 for a session the server does not know,
+			// so the client starts a new one; the stdio bridge does that itself.
 			http.Error(w, "MCP session not found", http.StatusNotFound)
 			return
 		}
@@ -302,17 +312,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			id := base64.RawURLEncoding.EncodeToString(random[:])
 			s.mu.Lock()
-			for key, expires := range s.sessions {
-				if time.Now().After(expires) {
-					delete(s.sessions, key)
-				}
-			}
-			if len(s.sessions) >= 128 {
-				s.mu.Unlock()
-				http.Error(w, "too many MCP sessions", http.StatusServiceUnavailable)
-				return
-			}
-			s.sessions[id] = time.Now().Add(30 * time.Minute)
+			s.addSession(id)
 			s.mu.Unlock()
 			w.Header().Set("Mcp-Session-Id", id)
 			ctx = gate.WithOutputOwner(ctx, id)
@@ -335,6 +335,23 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Write(out)
+}
+
+// addSession records a new session, forgetting the one that has gone longest
+// without a request when the table is full. The caller holds s.mu.
+func (s *Server) addSession(id string) {
+	if len(s.sessions) >= maxSessions {
+		var oldestID string
+		var oldest uint64
+		for key, used := range s.sessions {
+			if oldestID == "" || used < oldest {
+				oldestID, oldest = key, used
+			}
+		}
+		delete(s.sessions, oldestID)
+	}
+	s.seq++
+	s.sessions[id] = s.seq
 }
 
 // authorized compares the presented bearer token with the configured one in
