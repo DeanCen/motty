@@ -116,6 +116,9 @@ type transferCenter struct {
 	visibleActive, visibleEnded int
 	retryCount, conflictCount   int
 	batch                       transferBatch
+	// awake says this window already asked the process to stay awake for its
+	// running transfers; see keepAwakeForTransfers.
+	awake bool
 }
 
 // transferBody is what the popover body's declaration leaves for the controls
@@ -433,12 +436,16 @@ func (state *State) describeTransferSummary() {
 	center := &state.transfers
 	center.active, center.ended = 0, 0
 	var rate, done, total int64
+	running := 0
 	for _, entry := range center.entries {
 		if entry.removed {
 			continue
 		}
 		if transferActive(entry.snapshot) {
 			center.active++
+			if entry.snapshot.State == sftpclient.TransferRunning {
+				running++
+			}
 			rate += entry.snapshot.BytesPerSecond
 			done += entry.snapshot.BytesDone
 			total += entry.snapshot.BytesTotal
@@ -446,6 +453,9 @@ func (state *State) describeTransferSummary() {
 			center.ended++
 		}
 	}
+	// A transfer that moves bytes keeps the machine out of idle sleep; one that
+	// is queued or paused does not.
+	state.keepAwakeForTransfers(running > 0)
 	center.summary = state.messages.Transfers.Idle
 	center.badge = ""
 	if center.active > 0 {
